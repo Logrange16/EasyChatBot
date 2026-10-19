@@ -1,0 +1,8 @@
+# Core and local development server versions validated with Python 3.12.
+langgraph==1.2.16
+langchain-core==1.6.12
+langchain-openai==1.7.2
+langgraph-cli[inmem]==0.4.36
+langgraph-api==0.16.1
+typing-extensions==4.16.0
+python-dotenv==1.2.4

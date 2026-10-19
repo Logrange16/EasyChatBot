@@ -1,0 +1,60 @@
+import os
+from pathlib import Path
+from typing import Annotated
+
+from dotenv import load_dotenv
+from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
+
+from prompts import DEFAULT_SYSTEM_PROMPT
+
+
+load_dotenv(Path(__file__).with_name(".env"), override=False)
+
+
+class State(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+
+
+api_key = os.getenv("QWEN_API_KEY", "").strip()
+if not api_key:
+    raise ValueError(
+        "QWEN_API_KEY is missing. Copy .env.example to .env and add your API key, "
+        "or set QWEN_API_KEY in your environment."
+    )
+
+model_name = os.getenv("QWEN_MODEL", "").strip() or "qwen3.7-flash"
+base_url = (
+    os.getenv("QWEN_BASE_URL", "").strip()
+    or "https://maas.qianwenaiapi.com/compatible-mode/v1"
+)
+
+llm = ChatOpenAI(
+    model=model_name,
+    api_key=api_key,
+    base_url=base_url,
+    use_responses_api=False,
+    extra_body={"enable_thinking": False},
+    streaming=True,
+)
+
+
+def chatbot(state: State):
+    model_messages = [
+        SystemMessage(content=DEFAULT_SYSTEM_PROMPT),
+        *state["messages"],
+    ]
+    response = llm.invoke(model_messages)
+    return {"messages": [response]}
+
+
+graph_builder = StateGraph(State)
+graph_builder.add_node("chatbot", chatbot)
+graph_builder.add_edge(START, "chatbot")
+graph_builder.add_edge("chatbot", END)
+
+# Agent Server supplies checkpointing and manages conversation threads.
+graph = graph_builder.compile()
