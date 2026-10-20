@@ -4,6 +4,7 @@ from typing import Annotated
 
 from dotenv import load_dotenv
 from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -51,9 +52,17 @@ def chatbot(state: State):
     return {"messages": [response]}
 
 
-async def async_chatbot(state: State):
+async def async_chatbot(state: State, config: RunnableConfig):
+    prompt = DEFAULT_SYSTEM_PROMPT
+    nickname = config.get("configurable", {}).get("companion_name")
+    if nickname and nickname != "你的聊天伙伴":
+        prompt += (
+            f"\n\n本应用中，你当前的角色昵称是「{nickname}」。"
+            "日常交流和自我介绍时使用这个昵称，并沿用上述人设的性格和交流方式。"
+            "用户明确询问底层模型来源时，请如实回答。"
+        )
     model_messages = [
-        SystemMessage(content=DEFAULT_SYSTEM_PROMPT),
+        SystemMessage(content=prompt),
         *state["messages"],
     ]
     response = await llm.ainvoke(model_messages)

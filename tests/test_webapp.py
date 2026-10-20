@@ -1,8 +1,11 @@
 """Integration tests use a local fake model; no paid requests or real keys."""
 
 import asyncio
+import base64
+import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,8 +23,10 @@ from langchain_core.messages import AIMessage, AIMessageChunk, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.testclient import TestClient
+from PIL import Image
 
 import chatbot
+import webapp
 from webapp import COOKIE, create_app
 
 
@@ -32,7 +37,7 @@ class LocalModel(BaseChatModel):
 
     def reply(self, messages):
         assert isinstance(messages[0], SystemMessage)
-        assert messages[0].content == chatbot.DEFAULT_SYSTEM_PROMPT
+        assert messages[0].content.startswith(chatbot.DEFAULT_SYSTEM_PROMPT)
         humans = [m.content for m in messages if m.type == "human"]
         if humans[-1] == "fail":
             raise RuntimeError("private-provider-error-do-not-expose")
@@ -113,6 +118,31 @@ class WebAppTests(unittest.TestCase):
         isolated = events(self.send(other, "你好"))
         self.assertNotIn("蓝色风铃", isolated[-1][1]["content"])
 
+    def test_frontend_asset_urls_refresh_when_source_changes(self):
+        # An old cached script must not be reused with a newer page layout.
+        source = self.storage / "asset-preview"
+        web = source / "web"
+        web.mkdir(parents=True)
+        (web / "index.html").write_text('<link href="/static/style.css"><script src="/static/app.js"></script>', encoding="utf-8")
+        (web / "style.css").write_text("body {color: black}", encoding="utf-8")
+        (web / "app.js").write_text("console.log('first')", encoding="utf-8")
+        def asset_urls():
+            response = self.client.get("/")
+            self.assertEqual(response.headers["cache-control"], "no-cache")
+            return re.findall(r'/static/[^" ]+', response.text)
+        with patch.object(webapp, "ROOT", source):
+            first = asset_urls()
+            self.assertEqual(first, asset_urls())
+            self.assertTrue(all("?v=" in url for url in first))
+            (web / "app.js").write_text("console.log('updated settings')", encoding="utf-8")
+            updated = asset_urls()
+            self.assertEqual(first[0], updated[0])
+            self.assertNotEqual(first[1], updated[1])
+        for url in asset_urls():
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["cache-control"], "no-cache")
+
     def test_restart_restores_history_and_login(self):
         self.login()
         thread = self.new_chat()
@@ -179,6 +209,129 @@ class WebAppTests(unittest.TestCase):
         finally:
             self.client.portal.call(lock.release)
         self.assertEqual(events(self.send(thread, "现在可以继续"))[-1][0], "done")
+
+    @staticmethod
+    def image_data(image_format="PNG", size=(32, 24)):
+        output = io.BytesIO()
+        Image.new("RGB", size, "#b8a6d9").save(output, format=image_format)
+        content = output.getvalue()
+        return "data:image/png;base64," + base64.b64encode(content).decode(), content
+
+    def test_preferences_and_background_require_login(self):
+        self.assertEqual(self.client.get("/api/preferences").status_code, 401)
+        self.assertEqual(self.client.put("/api/preferences", json={"theme": "pink"}).status_code, 401)
+        self.assertEqual(self.client.get("/api/preferences/background").status_code, 401)
+        self.login()
+        defaults = self.client.get("/api/preferences").json()
+        self.assertNotIn("app_name", defaults)
+        self.assertEqual(defaults["companion_name"], "你的聊天伙伴")
+        self.assertEqual(defaults["theme"], "lavender")
+        self.assertIsNone(defaults["background_url"])
+
+    def test_preferences_and_png_persist_across_restart_and_devices(self):
+        self.login()
+        image, content = self.image_data()
+        updated = self.client.put("/api/preferences", json={
+            "companion_name": "  小岚  ", "theme": "pink",
+            "background_opacity": 45, "background_image": image,
+        })
+        self.assertEqual(updated.status_code, 200)
+        saved = updated.json()
+        self.assertEqual(saved["companion_name"], "小岚")
+        self.client.__exit__(None, None, None)
+        self.app = create_app(data_dir=self.storage)
+        self.client = TestClient(self.app)
+        self.client.__enter__()
+        self.login()
+        self.assertEqual(self.client.get("/api/preferences").json(), saved)
+        response = self.client.get(saved["background_url"])
+        self.assertEqual(response.content, content)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertIn("no-store", response.headers["cache-control"])
+        # Another logged-in browser sees the same saved appearance.
+        with TestClient(create_app(data_dir=self.storage)) as other:
+            other.post("/api/login", json={"password": "test-password-123"})
+            self.assertEqual(other.get("/api/preferences").json(), saved)
+
+    def test_background_jpeg_preserved_when_editing_names_and_can_be_removed(self):
+        self.login()
+        image, content = self.image_data("JPEG")
+        saved = self.client.put("/api/preferences", json={"background_image": image}).json()
+        response = self.client.get(saved["background_url"])
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+        self.assertEqual(response.content, content)
+        saved = self.client.put("/api/preferences", json={"companion_name": "小岚"}).json()
+        self.assertIsNotNone(saved["background_url"])
+        removed = self.client.put("/api/preferences", json={"background_image": None}).json()
+        self.assertEqual(removed["companion_name"], "小岚")
+        self.assertIsNone(removed["background_url"])
+        self.assertEqual(self.client.get("/api/preferences/background").status_code, 404)
+
+    def test_invalid_preferences_do_not_partially_replace_saved_values(self):
+        self.login()
+        image, _ = self.image_data()
+        saved = self.client.put("/api/preferences", json={"background_image": image}).json()
+        gif, _ = self.image_data("GIF")
+        _, png_bytes = self.image_data()
+        broken_png = bytearray(png_bytes)
+        broken_png[29] ^= 1  # Corrupt the header checksum without changing its dimensions.
+        _, jpeg_bytes = self.image_data("JPEG")
+        invalid = [
+            {"companion_name": " "}, {"companion_name": "x" * 25}, {"companion_name": "a\nb"},
+            {"companion_name": "\ud800"}, {"theme": "unknown"}, {"theme": []},
+            {"app_name": "已移除的应用名称"},
+            {"background_opacity": 101}, {"background_opacity": True},
+            {"unknown": "value"}, {"background_image": gif},
+            {"background_image": "data:image/png;base64,not-an-image!"},
+            {"background_image": "data:image/png;base64," + base64.b64encode(b"invalid").decode()},
+            {"background_image": self.image_data(size=(10001, 1))[0]},
+            {"background_image": "data:image/png;base64," + base64.b64encode(broken_png).decode()},
+            {"background_image": "data:image/jpeg;base64," + base64.b64encode(jpeg_bytes[:-10]).decode()},
+        ]
+        for changes in invalid:
+            with self.subTest(changes=list(changes)):
+                response = self.client.put("/api/preferences", content=json.dumps({"companion_name": "应当回滚", **changes}), headers={"Content-Type": "application/json"})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(self.client.get("/api/preferences").json(), saved)
+        too_large = "data:image/png;base64," + base64.b64encode(b"x" * (8 * 1024 * 1024 + 1)).decode()
+        self.assertEqual(self.client.put("/api/preferences", json={"background_image": too_large}).status_code, 413)
+        self.assertEqual(self.client.get("/api/preferences").json(), saved)
+
+    def test_companion_nickname_is_sent_to_model_without_replacing_persona(self):
+        self.login()
+        self.client.put("/api/preferences", json={"companion_name": "小岚"})
+        captured = []
+        def inspect_prompt(model, messages):
+            captured.append(messages[0].content)
+            return "我叫小岚"
+        with patch.object(LocalModel, "reply", inspect_prompt):
+            reply = events(self.send(self.new_chat(), "你叫什么名字？"))
+        self.assertEqual(reply[-1], ("done", {"content": "我叫小岚"}))
+        self.assertTrue(captured[0].startswith(chatbot.DEFAULT_SYSTEM_PROMPT))
+        self.assertIn("角色昵称是「小岚」", captured[0])
+
+    def test_legacy_app_name_is_ignored_without_losing_other_preferences_or_history(self):
+        self.login()
+        thread = self.new_chat()
+        self.send(thread, "保留这段聊天")
+        image, content = self.image_data()
+        saved = self.client.put("/api/preferences", json={
+            "companion_name": "Yanami", "theme": "sky", "background_image": image,
+        }).json()
+        legacy = {key: value for key, value in saved.items() if key != "background_url"}
+        legacy["app_name"] = "旧应用名称"
+        async def seed_legacy_preferences():
+            await self.app.state.db.execute("UPDATE preferences SET value = ? WHERE id = 1", (json.dumps(legacy),))
+            await self.app.state.db.commit()
+        self.client.portal.call(seed_legacy_preferences)
+        self.assertEqual(self.client.get("/api/preferences").json(), saved)
+        self.assertEqual(self.client.get(saved["background_url"]).content, content)
+        self.assertEqual(self.client.put("/api/preferences", json={"app_name": "不再支持修改"}).status_code, 400)
+        updated = self.client.put("/api/preferences", json={"theme": "pink"}).json()
+        self.assertEqual(updated["companion_name"], "Yanami")
+        self.assertEqual(updated["background_url"], saved["background_url"])
+        self.assertNotIn("app_name", updated)
+        self.assertEqual(len(self.client.get(f"/api/conversations/{thread}").json()["messages"]), 2)
 
 
 if __name__ == "__main__":

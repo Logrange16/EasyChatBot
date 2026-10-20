@@ -3,6 +3,13 @@
 const $ = (id) => document.getElementById(id);
 const state = { conversations: [], active: null, busy: false, controller: null };
 const mobileLayout = window.matchMedia("(max-width: 680px)");
+const defaultAppearance = { companion_name: "你的聊天伙伴", theme: "lavender", background_opacity: 30, background_url: null };
+let sidebarCollapsed = localStorage.getItem("chatbot-sidebar-collapsed") === "true";
+let appearance = { ...defaultAppearance };
+let settingsTheme = "lavender";
+let settingsBackground;
+let settingsPreviewURL = null;
+let settingsSaving = false;
 let toastTimer;
 
 function toast(text) {
@@ -27,6 +34,10 @@ async function api(path, options = {}) {
 }
 
 function showLogin() {
+  closeSettingsMenu();
+  if ($("settings-dialog").open) $("settings-dialog").close();
+  appearance = { ...defaultAppearance };
+  applyAppearance(appearance);
   state.conversations = [];
   state.active = null;
   $("messages").replaceChildren();
@@ -46,10 +57,7 @@ function setBusy(busy) {
   $("send-button").classList.toggle("is-stop", busy);
   $("send-button").innerHTML = busy ? '<span aria-hidden="true">■</span>' : '<span aria-hidden="true">↑</span>';
   $("send-button").setAttribute("aria-label", busy ? "停止生成" : "发送消息");
-  $("chat-status").replaceChildren();
-  const dot = document.createElement("span");
-  dot.className = "status-dot";
-  $("chat-status").append(dot, document.createTextNode(busy ? " 正在认真回复…" : " 随时听你说"));
+  $("messages").setAttribute("aria-busy", String(busy));
   updateComposer();
 }
 
@@ -60,11 +68,18 @@ function updateComposer() {
   input.style.height = `${Math.min(height + 2, 160)}px`;
   input.style.overflowY = height > 160 ? "auto" : "hidden";
   $("send-button").disabled = !state.busy && !input.value.trim();
+  updateScrollButton();
 }
 
 function scrollBottom(force = false) {
   const area = $("scroll-area");
   if (force || area.scrollHeight - area.scrollTop - area.clientHeight < 180) area.scrollTop = area.scrollHeight;
+  updateScrollButton();
+}
+
+function updateScrollButton() {
+  const area = $("scroll-area");
+  $("scroll-latest").hidden = !$("messages").childElementCount || area.scrollHeight - area.scrollTop - area.clientHeight < 180;
 }
 
 function addMessage(role, content, pending = false) {
@@ -82,7 +97,7 @@ function addMessage(role, content, pending = false) {
   body.className = "message-body";
   const label = document.createElement("div");
   label.className = "message-label";
-  label.textContent = role === "user" ? "我" : "聊天伙伴";
+  label.textContent = role === "user" ? "我" : appearance.companion_name;
   const bubble = document.createElement("div");
   bubble.className = "message-content";
   // Model and user messages are always rendered as text, never executable HTML.
@@ -170,6 +185,7 @@ async function deleteConversation(id) {
       localStorage.removeItem("chatbot-last-conversation");
       $("messages").replaceChildren();
       $("empty-state").hidden = false;
+      updateScrollButton();
     }
     await refreshConversations();
     toast("对话已删除。");
@@ -177,6 +193,8 @@ async function deleteConversation(id) {
 }
 
 async function enterChat() {
+  appearance = await (await api("/api/preferences")).json();
+  applyAppearance(appearance);
   await refreshConversations();
   $("loading-screen").hidden = true;
   $("login-screen").hidden = true;
@@ -257,11 +275,182 @@ async function sendMessage() {
 }
 
 function closeSidebar() {
+  closeSettingsMenu();
   $("sidebar").classList.remove("is-open");
   $("sidebar").inert = mobileLayout.matches;
   $("sidebar-backdrop").hidden = true;
   $("open-sidebar").setAttribute("aria-expanded", "false");
+  applySidebarLayout();
 }
+
+function applySidebarLayout() {
+  const collapsed = !mobileLayout.matches && sidebarCollapsed;
+  $("chat-screen").dataset.sidebarCollapsed = String(collapsed);
+  $("toggle-sidebar").setAttribute("aria-expanded", String(!collapsed));
+  const label = collapsed ? "展开侧边栏" : "收起侧边栏";
+  $("toggle-sidebar").setAttribute("aria-label", label);
+  $("toggle-sidebar").title = label;
+}
+
+function closeSettingsMenu({ restoreFocus = false } = {}) {
+  $("settings-menu").hidden = true;
+  $("open-settings").setAttribute("aria-expanded", "false");
+  if (restoreFocus) $("open-settings").focus({ preventScroll: true });
+}
+
+function toggleSettingsMenu() {
+  if (!$("settings-menu").hidden) { closeSettingsMenu(); return; }
+  $("settings-menu").hidden = false;
+  $("open-settings").setAttribute("aria-expanded", "true");
+  $("settings-menu").querySelector("button:not(:disabled)").focus({ preventScroll: true });
+}
+
+function applyAppearance(values) {
+  document.documentElement.dataset.theme = values.theme;
+  document.documentElement.style.setProperty("--background-opacity", String(values.background_opacity / 100));
+  $("sidebar-companion-name").textContent = values.companion_name;
+  $("sidebar-companion-name").title = values.companion_name;
+  document.title = `${values.companion_name} · 与你聊聊`;
+  $("theme-color").content = { lavender: "#f7f5fc", pink: "#fff5f8", sky: "#f0f8ff" }[values.theme];
+  document.querySelectorAll(".message.assistant .message-label").forEach(label => { label.textContent = values.companion_name; });
+  $("background-layer").style.backgroundImage = values.background_url ? `url("${values.background_url}")` : "none";
+}
+
+function previewSettings() {
+  const background = settingsBackground === null ? null : settingsPreviewURL || appearance.background_url;
+  const values = {
+    ...appearance,
+    companion_name: $("companion-name-input").value.trim() || appearance.companion_name,
+    theme: settingsTheme,
+    background_opacity: Number($("background-opacity").value),
+    background_url: background,
+  };
+  applyAppearance(values);
+  $("background-preview").style.backgroundImage = background ? `url("${background}")` : "none";
+  $("background-placeholder").hidden = Boolean(background);
+  $("remove-background").disabled = !background || settingsSaving;
+  $("background-opacity-value").textContent = `${values.background_opacity}%`;
+  document.querySelectorAll("[data-theme-option]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.themeOption === settingsTheme));
+  });
+}
+
+function openSettings(section = "names") {
+  closeSettingsMenu();
+  $("companion-name-input").value = appearance.companion_name;
+  $("background-opacity").value = appearance.background_opacity;
+  $("background-file").value = "";
+  $("background-file-label").textContent = appearance.background_url ? "已设置背景，可重新选择" : "PNG / JPG，最大 8 MB";
+  $("settings-error").textContent = "";
+  settingsTheme = appearance.theme;
+  settingsBackground = undefined;
+  previewSettings();
+  $("settings-dialog").showModal();
+  $("settings-dialog").scrollTop = 0;
+  const focusTarget = {
+    names: $("companion-name-input"),
+    colors: document.querySelector(`[data-theme-option="${settingsTheme}"]`),
+    background: $("background-file"),
+  }[section];
+  const sectionTarget = { names: $("name-settings"), colors: $("color-settings"), background: $("background-settings") }[section];
+  if (section !== "names") sectionTarget.scrollIntoView({ block: "nearest" });
+  focusTarget.focus({ preventScroll: true });
+}
+
+function readImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("图片读取失败，请重新选择。"));
+    reader.readAsDataURL(file);
+  });
+}
+
+$("open-settings").addEventListener("click", toggleSettingsMenu);
+$("open-settings").addEventListener("keydown", event => {
+  if (event.key === "ArrowDown" && $("settings-menu").hidden) { event.preventDefault(); toggleSettingsMenu(); }
+});
+document.querySelectorAll("[data-settings-section]").forEach(button => button.addEventListener("click", () => openSettings(button.dataset.settingsSection)));
+$("settings-menu").addEventListener("keydown", event => {
+  if (event.key === "Escape") { event.preventDefault(); closeSettingsMenu({ restoreFocus: true }); return; }
+  const buttons = Array.from($("settings-menu").querySelectorAll("button:not(:disabled)"));
+  const index = buttons.indexOf(document.activeElement);
+  let next;
+  if (event.key === "ArrowDown") next = (index + 1) % buttons.length;
+  if (event.key === "ArrowUp") next = (index - 1 + buttons.length) % buttons.length;
+  if (event.key === "Home") next = 0;
+  if (event.key === "End") next = buttons.length - 1;
+  if (next !== undefined) { event.preventDefault(); buttons[next].focus(); }
+});
+document.addEventListener("click", event => { if (!$("settings-area").contains(event.target)) closeSettingsMenu(); });
+$("settings-area").addEventListener("focusout", event => {
+  if (event.relatedTarget && !$("settings-area").contains(event.relatedTarget)) closeSettingsMenu();
+});
+$("close-settings").addEventListener("click", () => $("settings-dialog").close());
+$("cancel-settings").addEventListener("click", () => $("settings-dialog").close());
+$("settings-dialog").addEventListener("cancel", event => { if (settingsSaving) event.preventDefault(); });
+$("settings-dialog").addEventListener("close", () => {
+  applyAppearance(appearance);
+  if (settingsPreviewURL) URL.revokeObjectURL(settingsPreviewURL);
+  settingsPreviewURL = null;
+  settingsBackground = undefined;
+  if (!$("chat-screen").hidden) $("open-settings").focus({ preventScroll: true });
+});
+document.querySelectorAll("[data-theme-option]").forEach(button => button.addEventListener("click", () => {
+  settingsTheme = button.dataset.themeOption;
+  previewSettings();
+}));
+$("companion-name-input").addEventListener("input", previewSettings);
+$("background-opacity").addEventListener("input", previewSettings);
+$("background-file").addEventListener("change", () => {
+  const file = $("background-file").files[0];
+  if (!file) return;
+  $("settings-error").textContent = "";
+  if (file.size > 8 * 1024 * 1024 || !(/\.(png|jpe?g)$/i.test(file.name) && (!file.type || ["image/png", "image/jpeg"].includes(file.type)))) {
+    $("settings-error").textContent = "请选择不超过 8 MB 的 PNG 或 JPG 图片。";
+    $("background-file").value = "";
+    return;
+  }
+  if (settingsPreviewURL) URL.revokeObjectURL(settingsPreviewURL);
+  settingsBackground = file;
+  settingsPreviewURL = URL.createObjectURL(file);
+  $("background-file-label").textContent = file.name;
+  previewSettings();
+});
+$("remove-background").addEventListener("click", () => {
+  if (settingsPreviewURL) URL.revokeObjectURL(settingsPreviewURL);
+  settingsPreviewURL = null;
+  settingsBackground = null;
+  $("background-file").value = "";
+  $("background-file-label").textContent = "PNG / JPG，最大 8 MB";
+  previewSettings();
+});
+$("settings-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (settingsSaving) return;
+  settingsSaving = true;
+  $("settings-error").textContent = "";
+  const values = {
+    companion_name: $("companion-name-input").value.trim(),
+    theme: settingsTheme,
+    background_opacity: Number($("background-opacity").value),
+  };
+  $("settings-dialog").querySelectorAll("input, button").forEach(control => { control.disabled = true; });
+  $("save-settings").textContent = "正在保存…";
+  try {
+    if (settingsBackground !== undefined) values.background_image = settingsBackground === null ? null : await readImage(settingsBackground);
+    appearance = await (await api("/api/preferences", { method: "PUT", body: JSON.stringify(values) })).json();
+    applyAppearance(appearance);
+    $("settings-dialog").close();
+    toast("已经换成你喜欢的样子啦。");
+  } catch (error) { $("settings-error").textContent = error.message; }
+  finally {
+    settingsSaving = false;
+    $("settings-dialog").querySelectorAll("input, button").forEach(control => { control.disabled = false; });
+    $("save-settings").textContent = "保存设置";
+    if ($("settings-dialog").open) previewSettings();
+  }
+});
 
 $("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -289,8 +478,21 @@ $("message-input").addEventListener("keydown", event => {
 });
 $("new-chat").addEventListener("click", () => newConversation().catch(error => toast(error.message)));
 $("logout").addEventListener("click", async () => {
+  closeSettingsMenu();
   try { await api("/api/logout", { method: "POST" }); showLogin(); }
   catch (error) { toast(error.message); }
+});
+$("scroll-area").addEventListener("scroll", updateScrollButton, { passive: true });
+$("scroll-latest").addEventListener("click", () => scrollBottom(true));
+window.addEventListener("resize", updateScrollButton);
+$("toggle-sidebar").addEventListener("click", () => {
+  const area = $("scroll-area");
+  const atBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 180;
+  closeSettingsMenu();
+  sidebarCollapsed = !sidebarCollapsed;
+  localStorage.setItem("chatbot-sidebar-collapsed", String(sidebarCollapsed));
+  applySidebarLayout();
+  if (atBottom) scrollBottom(true); else updateScrollButton();
 });
 $("open-sidebar").addEventListener("click", () => {
   $("sidebar").inert = false;

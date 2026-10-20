@@ -21,11 +21,12 @@ from starlette.exceptions import HTTPException
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from chatbot import build_graph
+from personalization import MAX_PREFERENCES_BYTES, get_preferences, initialize_preferences, update_preferences
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = "chatbot_session"
@@ -65,10 +66,12 @@ def require_login(request: Request):
         raise HTTPException(401, "请先输入访问密码。")
 
 
-async def read_json(request: Request) -> dict:
-    body = await request.body()
-    if len(body) > 65536:
-        raise HTTPException(413, "这条消息太长了，请分几次发送。")
+async def read_json(request: Request, *, max_bytes=65536) -> dict:
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise HTTPException(413, "内容太大了，请缩小图片或分次发送消息。")
     try:
         value = json.loads(body)
     except (ValueError, UnicodeDecodeError):
@@ -89,16 +92,25 @@ class WebHeaders(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+            "img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'"
         )
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
 
 async def index(request):
-    return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-cache"})
+    def render_page():
+        page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        # Match HTML to its current assets even when a browser cached older files.
+        for filename in ("style.css", "app.js"):
+            version = hashlib.sha256((ROOT / "web" / filename).read_bytes()).hexdigest()[:12]
+            page = page.replace(f"/static/{filename}", f"/static/{filename}?v={version}")
+        return page
+    return HTMLResponse(await asyncio.to_thread(render_page), headers={"Cache-Control": "no-cache"})
 
 
 async def session(request):
@@ -142,6 +154,25 @@ async def logout(request):
     response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE, path="/")
     return response
+
+
+async def preferences(request):
+    require_login(request)
+    if request.method == "GET":
+        return JSONResponse(await get_preferences(request.app.state.db))
+    data = await read_json(request, max_bytes=MAX_PREFERENCES_BYTES)
+    async with request.app.state.preferences_lock:
+        values = await update_preferences(request.app.state.db, data)
+    return JSONResponse(values)
+
+
+async def background_image(request):
+    require_login(request)
+    async with request.app.state.db.execute("SELECT background, mime FROM preferences WHERE id = 1") as cursor:
+        row = await cursor.fetchone()
+    if not row or row[0] is None:
+        raise HTTPException(404, "还没有设置背景图片。")
+    return Response(row[0], media_type=row[1])
 
 
 async def conversation_row(request):
@@ -221,7 +252,11 @@ async def send_message(request):
     async def stream():
         try:
             graph = request.app.state.graph
-            config = {"configurable": {"thread_id": row["id"]}}
+            appearance = await get_preferences(request.app.state.db)
+            config = {"configurable": {
+                "thread_id": row["id"],
+                "companion_name": appearance["companion_name"],
+            }}
             title = row["title"]
             if title == "新的对话":
                 title = content.replace("\n", " ")[:26]
@@ -289,10 +324,12 @@ def create_app(*, data_dir: Path | None = None, password: str | None = None):
         app.state.cookie_secure = os.getenv("CHAT_COOKIE_SECURE", "false").lower() == "true"
         app.state.locks = defaultdict(asyncio.Lock)
         app.state.login_failures = defaultdict(deque)
+        app.state.preferences_lock = asyncio.Lock()
         async with aiosqlite.connect(storage / "conversations.sqlite") as db:
             db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at REAL NOT NULL)")
+            await initialize_preferences(db)
             await db.commit()
             async with AsyncSqliteSaver.from_conn_string(str(storage / "checkpoints.sqlite")) as saver:
                 app.state.db = db
@@ -307,6 +344,8 @@ def create_app(*, data_dir: Path | None = None, password: str | None = None):
             Route("/api/session", session),
             Route("/api/login", login, methods=["POST"]),
             Route("/api/logout", logout, methods=["POST"]),
+            Route("/api/preferences", preferences, methods=["GET", "PUT"]),
+            Route("/api/preferences/background", background_image),
             Route("/api/conversations", conversations, methods=["GET", "POST"]),
             Route("/api/conversations/{conversation_id}", conversation, methods=["GET", "DELETE"]),
             Route("/api/conversations/{conversation_id}/messages", send_message, methods=["POST"]),

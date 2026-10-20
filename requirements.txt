@@ -12,3 +12,4 @@ starlette==1.9.0
 uvicorn==0.54.0
 langgraph-checkpoint-sqlite==3.1.2
 aiosqlite==0.22.1
+Pillow==13.0.0

@@ -13,7 +13,7 @@ if not exist ".env" (
     pause
     exit /b 1
 )
-"%AGENT_ENV%\python.exe" -c "import starlette, uvicorn, aiosqlite; from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver"
+"%AGENT_ENV%\python.exe" -c "import starlette, uvicorn, aiosqlite, PIL; from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver"
 if errorlevel 1 (
     echo [ERROR] Activate agent and run: python -m pip install -r requirements.txt
     pause
