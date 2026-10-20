@@ -51,10 +51,24 @@ def chatbot(state: State):
     return {"messages": [response]}
 
 
-graph_builder = StateGraph(State)
-graph_builder.add_node("chatbot", chatbot)
-graph_builder.add_edge(START, "chatbot")
-graph_builder.add_edge("chatbot", END)
+async def async_chatbot(state: State):
+    model_messages = [
+        SystemMessage(content=DEFAULT_SYSTEM_PROMPT),
+        *state["messages"],
+    ]
+    response = await llm.ainvoke(model_messages)
+    return {"messages": [response]}
+
+
+def build_graph(*, async_model: bool = False):
+    builder = StateGraph(State)
+    builder.add_node("chatbot", async_chatbot if async_model else chatbot)
+    builder.add_edge(START, "chatbot")
+    builder.add_edge("chatbot", END)
+    return builder
+
+
+graph_builder = build_graph()
 
 # Agent Server supplies checkpointing and manages conversation threads.
 graph = graph_builder.compile()

@@ -6,3 +6,9 @@ langgraph-cli[inmem]==0.4.36
 langgraph-api==0.16.1
 typing-extensions==4.16.0
 python-dotenv==1.2.4
+
+# Standalone web interface and durable local conversations.
+starlette==1.9.0
+uvicorn==0.54.0
+langgraph-checkpoint-sqlite==3.1.2
+aiosqlite==0.22.1

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f5fc">
+  <meta name="description" content="一个可以慢慢说话的地方。你的私人聊天伙伴。">
+  <title>ChatBot · 与你聊聊</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login-screen" class="login-screen" hidden>
+    <div class="login-decoration" aria-hidden="true"><span></span><span></span><span></span></div>
+    <main class="login-card">
+      <div class="brand-symbol large" aria-hidden="true">✦</div>
+      <p class="eyebrow">CHATBOT · PRIVATE SPACE</p>
+      <h1>留一点时间，<br>和自己喜欢的人聊聊。</h1>
+      <p class="login-description">生活的小事、突然的灵感，<br>还有那些想被认真听见的话。</p>
+      <form id="login-form">
+        <label for="password">访问密码</label>
+        <div class="password-field">
+          <input id="password" name="password" type="password" autocomplete="current-password" placeholder="输入你的访问密码" required maxlength="256">
+          <button id="show-password" type="button" class="text-button" aria-label="显示密码">显示</button>
+        </div>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button id="login-button" class="primary-button" type="submit">进入聊天 <span aria-hidden="true">↗</span></button>
+      </form>
+      <p class="login-note"><span class="tiny-dot"></span> 这里，只有你的对话</p>
+    </main>
+    <footer class="login-footer">SOMEWHERE TO SHARE YOUR EVERYDAY.</footer>
+  </section>
+
+  <div id="chat-screen" class="app-shell" hidden>
+    <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="关闭会话列表" tabindex="-1" hidden></button>
+    <aside id="sidebar" class="sidebar" aria-label="会话列表">
+      <div class="sidebar-brand"><span class="brand-symbol" aria-hidden="true">✦</span><span>ChatBot<small>与你聊聊</small></span><button id="close-sidebar" class="icon-button mobile-only" aria-label="关闭会话列表">×</button></div>
+      <button id="new-chat" class="new-chat"><span aria-hidden="true">＋</span> 开启一段新对话</button>
+      <div class="list-heading"><span>最近的对话</span><span id="conversation-count">0</span></div>
+      <nav id="conversation-list" class="conversation-list" aria-label="历史对话"></nav>
+      <div class="sidebar-bottom">
+        <div class="private-note"><span aria-hidden="true">◇</span><div>属于你的小小空间<small>每一次聊天，都会好好保存</small></div></div>
+        <button id="logout" class="logout-button">退出登录 <span aria-hidden="true">↗</span></button>
+      </div>
+    </aside>
+
+    <main class="chat-main">
+      <header class="chat-header">
+        <button id="open-sidebar" class="icon-button mobile-only" aria-label="打开会话列表" aria-expanded="false">☰</button>
+        <span class="companion-avatar" aria-hidden="true">✦</span>
+        <div class="companion-info"><h1>你的聊天伙伴</h1><p id="chat-status" role="status"><span class="status-dot"></span> 随时听你说</p></div>
+        <span class="header-tag">PRIVATE CHAT</span>
+      </header>
+
+      <div id="scroll-area" class="scroll-area">
+        <section id="empty-state" class="empty-state">
+          <div class="welcome-art" aria-hidden="true"><span class="orbit"></span><span class="welcome-star">✦</span><span class="little-star one">✧</span><span class="little-star two">✦</span></div>
+          <p class="eyebrow">A LITTLE SPACE, JUST FOR YOU</p>
+          <h2>今天，想聊些什么？</h2>
+          <p>生活里的小事，突然冒出的想法，<br>或只是简单地说声「你好」。</p>
+          <div class="suggestions">
+            <button data-prompt="想和你分享一下今天的小开心。"><span aria-hidden="true">☀</span> 分享今天的小开心</button>
+            <button data-prompt="现在有空吗？陪我聊聊天吧。"><span aria-hidden="true">♡</span> 陪我聊聊天</button>
+            <button data-prompt="我有个想法，想和你一起讨论一下。"><span aria-hidden="true">✧</span> 一起想个好主意</button>
+          </div>
+        </section>
+        <section id="messages" class="messages" role="log" aria-label="聊天记录" aria-live="polite"></section>
+      </div>
+
+      <div class="composer-area">
+        <form id="message-form" class="composer">
+          <label for="message-input" class="sr-only">发送消息</label>
+          <textarea id="message-input" rows="1" placeholder="慢慢说，我在听…" maxlength="12000"></textarea>
+          <button id="send-button" class="send-button" type="submit" aria-label="发送消息" disabled><span aria-hidden="true">↑</span></button>
+        </form>
+        <div class="composer-note"><span>对话会自动保存</span><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div>
+      </div>
+    </main>
+  </div>
+  <div id="loading-screen" class="loading-screen"><span class="brand-symbol large">✦</span><p>正在打开你的聊天空间…</p></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

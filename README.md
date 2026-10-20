@@ -1,6 +1,6 @@
 # ChatBot
 
-基于 **LangGraph、千问模型和 LangSmith Studio** 的聊天机器人学习项目。支持自定义人设、流式回复、同一会话中的多轮对话，以及在 Studio 中查看消息状态和调试执行过程。
+基于 **LangGraph 和千问模型** 的聊天机器人。提供适配电脑与手机的独立网页界面，支持访问密码、流式回复、多轮聊天和 SQLite 历史记录保存。也可以使用 LangSmith Studio 调试图和会话。
 
 默认使用 `qwen3.7-flash`，模型名称和 API 地址均可通过环境变量调整。默认人设位于 [`prompts.py`](./prompts.py)，可以根据自己的需求修改。
 
@@ -9,7 +9,8 @@
 - 推荐 Python **3.12**；本地 Agent Server 要求 Python **3.11 或以上**。
 - Miniconda 或 Anaconda，推荐创建名为 `agent` 的环境。
 - 千问平台 API Key，以及该 Key 有权限调用的模型和对应 API 地址。
-- 使用 Studio 时，按照官方流程准备 LangSmith 账号和 API Key。
+- 独立网页模式只需要千问 API Key 和自己设置的访问密码，不依赖 Studio 或 LangSmith 账号。
+- 使用可选的 Studio 调试模式时，按照官方流程准备 LangSmith 账号和 API Key。
 
 Windows 提供双击启动脚本；其他系统可以使用下文的命令行启动方式。当前版本在 Windows / Python 3.12 环境中验证。
 
@@ -48,6 +49,11 @@ QWEN_BASE_URL=https://maas.qianwenaiapi.com/compatible-mode/v1
 
 LANGSMITH_API_KEY=你的LangSmith_API_Key
 LANGSMITH_TRACING=false
+
+# 网页访问密码，至少 8 个字符；不要使用模型 API Key 作为密码。
+CHAT_PASSWORD=你自己设置的访问密码
+CHAT_DATA_DIR=data/web
+CHAT_COOKIE_SECURE=false
 ```
 
 `QWEN_BASE_URL` 必须与申请 Key 的平台、地域和接口类型匹配。示例使用千问 AI 平台的 OpenAI 兼容接口；使用阿里云百炼等其他入口时，请以相应控制台显示的地址为准，不能只复制一个与 Key 不匹配的地址。
@@ -57,14 +63,53 @@ LANGSMITH_TRACING=false
 | `QWEN_API_KEY` | 调用千问模型，必填 |
 | `QWEN_MODEL` | 模型标识，默认 `qwen3.7-flash`；需要有相应调用权限 |
 | `QWEN_BASE_URL` | OpenAI 兼容接口地址，填写到 `/v1`，不要再追加 `/chat/completions` |
-| `LANGSMITH_API_KEY` | 按 Studio 官方接入流程配置 |
+| `LANGSMITH_API_KEY` | 仅在使用 Studio 或 LangSmith 追踪时配置 |
+| `CHAT_PASSWORD` | 独立网页的访问密码，至少 8 个字符 |
+| `CHAT_DATA_DIR` | 网页会话和检查点的保存目录，默认 `data/web` |
+| `CHAT_COOKIE_SECURE` | 本地 HTTP 使用 `false`，以后配置 HTTPS 时使用 `true` |
 | `LANGSMITH_TRACING` | `true` 将调用轨迹及消息记录到 LangSmith；`false` 关闭该追踪 |
 
 模型调用本身仍会将消息发送给所配置的模型服务。已有系统环境变量优先于 `.env` 中的同名值；如果修改 `.env` 后没有变化，请检查终端是否设置了同名变量，并重启服务。
 
 `.env` 已被 Git 忽略。仓库中只发布不含真实密钥的 `.env.example`。
 
-### 4. 启动服务
+### 4. 启动独立网页（推荐）
+
+完成依赖安装，并在 `.env` 中填写 `QWEN_API_KEY` 和 `CHAT_PASSWORD` 后，双击 **`start_web.bat`**，或在 PowerShell 中运行：
+
+```powershell
+.\start_web.bat
+```
+
+浏览器会自动打开 <http://127.0.0.1:8000>。输入自己设置的访问密码，即可使用独立聊天页面。
+
+- 左侧新建、切换或删除对话；手机窄屏通过左上角菜单打开会话列表。
+- 每次发送一条新消息，机器人边生成边回复；生成期间可点击停止按钮。
+- 记录保存到 SQLite，关闭或重启网页服务后可以继续原会话。
+- 浏览器只与自己的 Python 后端通信，模型 API Key 不会发给网页。
+- 这是单个访问密码的私人聊天应用，所有通过该密码登录的设备共享会话列表，不是多用户账户系统。
+
+也可以在激活 `agent` 的终端中手动启动：
+
+```powershell
+python run_web.py
+```
+
+macOS / Linux 同样可以运行 `python run_web.py --no-browser`；Windows 启动脚本自动设置 UTF-8。默认仅监听本机 `127.0.0.1`，不开放到公网。
+
+**在同一 Wi-Fi 下用手机访问：**
+
+```powershell
+.\start_web.bat --host 0.0.0.0
+```
+
+然后在手机浏览器输入 `http://电脑的局域网IP:8000`。电脑和手机需要能够互相访问；Windows 防火墙如有提示，应仅允许需要的专用网络。这种方式仍需要电脑保持运行；以后部署到自己的服务器并配置 HTTPS 后，才能在外网随时访问。
+
+`CHAT_DATA_DIR` 下的 `conversations.sqlite` 保存会话索引，`checkpoints.sqlite` 保存 LangGraph 消息状态，`session.key` 用于保护登录 Cookie。备份或迁移时，在停止服务后备份整个目录；不要提交它，也不要把数据目录作为静态文件目录。
+
+网页服务目前按单进程运行，启动器使用一个 worker；多进程或多用户部署需要另行设计会话锁和存储。当前没有执行公网部署。原 Notebook 和 Studio 的历史不会自动导入网页版。
+
+### 5. 可选：使用 Studio 调试
 
 **Windows 双击启动：**
 
@@ -83,7 +128,7 @@ $env:AGENT_ENV = $env:CONDA_PREFIX
 .\start_chatbot.bat
 ```
 
-启动脚本不会自动创建环境或安装依赖；首次使用时请先完成前面的安装步骤。Windows `.lnk` 快捷方式绑定本机路径，不随仓库发布。如有需要，请在自己的电脑上为脚本创建桌面快捷方式。
+两个启动脚本都不会自动创建环境或安装依赖；首次使用时请先完成前面的安装步骤。Windows `.lnk` 快捷方式绑定本机路径，不随仓库发布。如有需要，请在自己的电脑上为脚本创建桌面快捷方式。
 
 **手动启动：**
 
@@ -133,7 +178,13 @@ ChatBot/
 ├── prompts.py          # 默认系统提示词
 ├── langgraph.json      # 图入口、项目依赖和环境变量配置
 ├── requirements.txt    # 应用与本地开发服务依赖
-├── start_chatbot.bat   # Windows 双击启动入口
+├── start_web.bat       # 独立网页启动入口
+├── run_web.py          # 网页服务启动参数与自动打开浏览器
+├── webapp.py           # 登录、会话 API、流式回复和 SQLite 保存
+├── web/                # 本地 HTML、CSS、JavaScript 与图标
+├── scripts/            # 两个启动器共用的环境查找逻辑
+├── tests/              # 使用模拟模型的网页集成测试
+├── start_chatbot.bat   # 可选的 Studio 服务启动入口
 ├── .env.example        # 可公开的配置模板
 ├── .gitattributes      # Git 文本与脚本换行规则
 ├── .gitignore          # 密钥、会话、Notebook 等忽略规则
@@ -142,16 +193,26 @@ ChatBot/
 
 `chatbot.py` 每次将“系统人设 + 当前会话消息”交给模型，节点只返回新增的助手回复，由 `add_messages` 合并消息。
 
-应用通过 `graph_builder.compile()` 导出图；接入 Agent Server 后，检查点和 Thread 由服务管理。Notebook 中手动连接 SQLite 的代码不参与 Studio 应用，已有 Notebook 数据也不会自动迁移到 Studio。
+Studio 模式通过 `graph_builder.compile()` 导出图；接入 Agent Server 后，检查点和 Thread 由服务管理。独立网页模式则复用同一份模型和人设，使用异步节点与 `AsyncSqliteSaver` 自行持久化会话。Notebook 中手动连接 SQLite 的代码不参与 Studio 应用，已有 Notebook 数据也不会自动迁移到 Studio。
 
 本地服务产生的 `.langgraph_api/`、Notebook 产生的 `data/` 和数据库文件均属于本机运行数据，已被忽略。`langgraph dev` 是开发测试服务，不应将这些开发数据作为生产环境的数据保障；正式部署应配置相应的持久化基础设施。
 
 学习用的 `init.ipynb` 保留在作者本地，不包含在 GitHub 仓库中，启动应用不依赖它。
 
+## 运行网页测试
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+测试使用模拟模型和临时数据库，不调用真实千问 API。覆盖登录与 Cookie、流式消息、多轮上下文、会话隔离、重启恢复、删除、输入校验和错误处理。
+
 ## 常见问题
 
 | 问题 | 检查方式 |
 | --- | --- |
+| 网页提示没有设置访问密码 | 在 `.env` 中设置至少 8 个字符的 `CHAT_PASSWORD`，然后重启网页服务 |
+| 网页登录后手机看不到原来的聊天 | 确认访问的是同一个网页服务实例、同一个数据目录；Studio 与独立网页不共享历史 |
 | 找不到 `agent` 环境 | 先创建环境；自定义安装位置可以激活环境后启动，或设置 `AGENT_ENV` |
 | 找不到 LangGraph CLI 或其他依赖 | 激活正确环境后重新运行 `python -m pip install -r requirements.txt` |
 | 提示缺少 `.env` 或 `QWEN_API_KEY` | 从 `.env.example` 创建 `.env` 并填写自己的 Key |
