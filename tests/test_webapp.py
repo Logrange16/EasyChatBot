@@ -6,14 +6,17 @@ import io
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
 # Override credentials before loading the application or its .env configuration.
 os.environ["QWEN_API_KEY"] = "local-test-only"
 os.environ["QWEN_BASE_URL"] = "https://example.invalid/v1"
+os.environ["TAVILY_API_KEY"] = ""
 os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["CHAT_PASSWORD"] = "test-password-123"
 os.environ["CHAT_COOKIE_SECURE"] = "false"
@@ -21,23 +24,37 @@ os.environ["CHAT_COOKIE_SECURE"] = "false"
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.testclient import TestClient
 from PIL import Image
 
 import chatbot
+import assistant
+import agent_runtime
 import webapp
 from webapp import COOKIE, create_app
 
 
+@tool
+def offline_search(query: str) -> str:
+    """Return an offline source for integration tests."""
+    return "本地检索资料：" + query
+
+
 class LocalModel(BaseChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
     @property
     def _llm_type(self):
         return "offline-test"
 
     def reply(self, messages):
         assert isinstance(messages[0], SystemMessage)
-        assert messages[0].content.startswith(chatbot.DEFAULT_SYSTEM_PROMPT)
+        assert messages[0].content.startswith((chatbot.DEFAULT_SYSTEM_PROMPT, assistant.TOOL_SYSTEM_PROMPT))
+        if messages[-1].type == "tool":
+            return "根据工具资料回答：" + messages[-1].content
         humans = [m.content for m in messages if m.type == "human"]
         if humans[-1] == "fail":
             raise RuntimeError("private-provider-error-do-not-expose")
@@ -47,6 +64,14 @@ class LocalModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.reply(messages)))])
 
     async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        if messages[-1].type == "human" and messages[-1].content.startswith("search:"):
+            yield ChatGenerationChunk(message=AIMessageChunk(
+                content="", tool_call_chunks=[{
+                    "name": "offline_search", "args": json.dumps({"query": messages[-1].content[7:]}),
+                    "id": "offline-search-call", "index": 0,
+                }],
+            ))
+            return
         for character in self.reply(messages):
             yield ChatGenerationChunk(message=AIMessageChunk(content=character))
 
@@ -63,10 +88,16 @@ def events(response):
 
 class WebAppTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
+        temp_root = Path(__file__).resolve().parents[1] / ".tmp"
+        temp_root.mkdir(exist_ok=True)
+        self.directory = tempfile.TemporaryDirectory(dir=temp_root)
         self.storage = Path(self.directory.name)
-        self.model_patch = patch.object(chatbot, "llm", LocalModel())
+        self.model_patch = patch.object(agent_runtime, "llm", LocalModel())
         self.model_patch.start()
+        self.companion_tools_patch = patch.object(chatbot, "tools", [offline_search])
+        self.assistant_tools_patch = patch.object(assistant, "tools", [offline_search])
+        self.companion_tools_patch.start()
+        self.assistant_tools_patch.start()
         self.app = create_app(data_dir=self.storage)
         self.client = TestClient(self.app)
         self.client.__enter__()
@@ -74,6 +105,8 @@ class WebAppTests(unittest.TestCase):
     def tearDown(self):
         self.client.__exit__(None, None, None)
         self.model_patch.stop()
+        self.companion_tools_patch.stop()
+        self.assistant_tools_patch.stop()
         self.directory.cleanup()
 
     def login(self):
@@ -82,8 +115,8 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("HttpOnly", response.headers["set-cookie"])
         self.assertIn("SameSite=strict", response.headers["set-cookie"])
 
-    def new_chat(self):
-        response = self.client.post("/api/conversations")
+    def new_chat(self, mode="companion"):
+        response = self.client.post("/api/conversations", json={"mode": mode})
         self.assertEqual(response.status_code, 201)
         return response.json()["id"]
 
@@ -117,6 +150,64 @@ class WebAppTests(unittest.TestCase):
         other = self.new_chat()
         isolated = events(self.send(other, "你好"))
         self.assertNotIn("蓝色风铃", isolated[-1][1]["content"])
+
+    def test_modes_use_separate_graphs_prompts_and_conversation_history(self):
+        self.login()
+        self.assertIsNot(self.app.state.graphs["companion"], self.app.state.graphs["assistant"])
+        companion = self.new_chat()
+        research = self.new_chat("assistant")
+        captured = []
+        original = LocalModel.reply
+        def capture(model, messages):
+            captured.append(messages[0].content)
+            return original(model, messages)
+        with patch.object(LocalModel, "reply", capture):
+            self.send(companion, "陪伴会话的暗号")
+            answer = events(self.send(research, "助手的研究问题"))
+        self.assertTrue(captured[0].startswith(chatbot.DEFAULT_SYSTEM_PROMPT))
+        self.assertNotIn(assistant.TOOL_SYSTEM_PROMPT, captured[0])
+        self.assertTrue(captured[1].startswith(assistant.TOOL_SYSTEM_PROMPT))
+        self.assertNotIn(chatbot.DEFAULT_SYSTEM_PROMPT, captured[1])
+        self.assertNotIn("陪伴会话的暗号", answer[-1][1]["content"])
+        for thread, mode in ((companion, "companion"), (research, "assistant")):
+            self.assertEqual(self.client.get(f"/api/conversations/{thread}").json()["mode"], mode)
+        rows = self.client.get("/api/conversations").json()
+        self.assertEqual({row["mode"] for row in rows}, {"companion", "assistant"})
+        # Mode is fixed at creation; a send cannot redirect an existing thread.
+        response = self.client.post(f"/api/conversations/{research}/messages", json={"content": "继续研究", "mode": "companion"})
+        self.assertEqual(events(response)[-1][0], "done")
+        self.assertEqual(self.client.get(f"/api/conversations/{research}").json()["mode"], "assistant")
+
+    def test_tool_roundtrip_and_visible_history_in_both_modes(self):
+        self.login()
+        for mode in ("companion", "assistant"):
+            with self.subTest(mode=mode):
+                thread = self.new_chat(mode)
+                reply = events(self.send(thread, "search:验证工具闭环"))
+                self.assertTrue(any(kind == "status" for kind, _ in reply))
+                self.assertEqual(reply[-1], ("done", {"content": "根据工具资料回答：本地检索资料：验证工具闭环"}))
+                saved = self.client.get(f"/api/conversations/{thread}").json()
+                self.assertEqual([m["role"] for m in saved["messages"]], ["user", "assistant"])
+                self.assertEqual(saved["messages"][-1]["content"], reply[-1][1]["content"])
+
+    def test_mode_validation_and_default_for_older_clients(self):
+        self.login()
+        for mode in ("unknown", None, [], {}):
+            self.assertEqual(self.client.post("/api/conversations", json={"mode": mode}).status_code, 400)
+        self.assertEqual(self.client.post("/api/conversations").json()["mode"], "companion")
+
+    def test_legacy_conversation_database_migrates_without_losing_rows(self):
+        legacy_storage = self.storage / "legacy"
+        legacy_storage.mkdir()
+        with closing(sqlite3.connect(legacy_storage / "conversations.sqlite")) as db:
+            db.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at REAL NOT NULL)")
+            db.execute("INSERT INTO conversations VALUES ('legacy-thread', '已有对话', 123)")
+            db.commit()
+        with TestClient(create_app(data_dir=legacy_storage)) as client:
+            client.post("/api/login", json={"password": "test-password-123"})
+            self.assertEqual(client.get("/api/conversations").json(), [
+                {"id": "legacy-thread", "title": "已有对话", "updated_at": 123.0, "mode": "companion"},
+            ])
 
     def test_frontend_asset_urls_refresh_when_source_changes(self):
         # An old cached script must not be reused with a newer page layout.
@@ -158,6 +249,29 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(len(saved["messages"]), 2)
         reply = events(self.send(thread, "重启后继续"))
         self.assertIn("重启前的消息", reply[-1][1]["content"])
+
+    def test_assistant_mode_and_history_survive_restart_without_companion_nickname(self):
+        self.login()
+        self.client.put("/api/preferences", json={"companion_name": "小岚"})
+        thread = self.new_chat("assistant")
+        self.send(thread, "助手历史")
+        self.client.__exit__(None, None, None)
+        self.app = create_app(data_dir=self.storage)
+        self.client = TestClient(self.app)
+        self.client.__enter__()
+        self.login()
+        saved = self.client.get(f"/api/conversations/{thread}").json()
+        self.assertEqual(saved["mode"], "assistant")
+        self.assertEqual(len(saved["messages"]), 2)
+        captured = []
+        original = LocalModel.reply
+        def capture(model, messages):
+            captured.append(messages[0].content)
+            return original(model, messages)
+        with patch.object(LocalModel, "reply", capture):
+            reply = events(self.send(thread, "继续研究"))
+        self.assertIn("助手历史", reply[-1][1]["content"])
+        self.assertNotIn("小岚", captured[0])
 
     def test_delete_removes_conversation_and_checkpoints(self):
         self.login()

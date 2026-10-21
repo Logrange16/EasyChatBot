@@ -25,13 +25,15 @@ from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from chatbot import build_graph
+from chatbot import build_graph as build_companion_graph
+from assistant import build_graph as build_assistant_graph
 from personalization import MAX_PREFERENCES_BYTES, get_preferences, initialize_preferences, update_preferences
 
 ROOT = Path(__file__).resolve().parent
 COOKIE = "chatbot_session"
 SESSION_SECONDS = 7 * 24 * 60 * 60
 logger = logging.getLogger(__name__)
+GRAPH_BUILDERS = {"companion": build_companion_graph, "assistant": build_assistant_graph}
 
 
 def text_content(content) -> str:
@@ -66,14 +68,14 @@ def require_login(request: Request):
         raise HTTPException(401, "请先输入访问密码。")
 
 
-async def read_json(request: Request, *, max_bytes=65536) -> dict:
+async def read_json(request: Request, *, max_bytes=65536, allow_empty=False) -> dict:
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
         if len(body) > max_bytes:
             raise HTTPException(413, "内容太大了，请缩小图片或分次发送消息。")
     try:
-        value = json.loads(body)
+        value = json.loads(body) if body or not allow_empty else {}
     except (ValueError, UnicodeDecodeError):
         raise HTTPException(400, "无法读取这条请求，请重试。")
     if not isinstance(value, dict):
@@ -177,7 +179,7 @@ async def background_image(request):
 
 async def conversation_row(request):
     async with request.app.state.db.execute(
-        "SELECT id, title, updated_at FROM conversations WHERE id = ?",
+        "SELECT id, title, updated_at, mode FROM conversations WHERE id = ?",
         (request.path_params["conversation_id"],),
     ) as cursor:
         row = await cursor.fetchone()
@@ -190,14 +192,18 @@ async def conversations(request):
     require_login(request)
     db = request.app.state.db
     if request.method == "POST":
-        row = {"id": str(uuid4()), "title": "新的对话", "updated_at": time.time()}
+        data = await read_json(request, allow_empty=True)
+        mode = data.get("mode", "companion")
+        if not isinstance(mode, str) or mode not in GRAPH_BUILDERS:
+            raise HTTPException(400, "请选择陪伴模式或助手模式。")
+        row = {"id": str(uuid4()), "title": "新的对话", "updated_at": time.time(), "mode": mode}
         await db.execute(
-            "INSERT INTO conversations (id, title, updated_at) VALUES (?, ?, ?)",
-            (row["id"], row["title"], row["updated_at"]),
+            "INSERT INTO conversations (id, title, updated_at, mode) VALUES (?, ?, ?, ?)",
+            (row["id"], row["title"], row["updated_at"], mode),
         )
         await db.commit()
         return JSONResponse(row, status_code=201)
-    async with db.execute("SELECT id, title, updated_at FROM conversations ORDER BY updated_at DESC") as cursor:
+    async with db.execute("SELECT id, title, updated_at, mode FROM conversations ORDER BY updated_at DESC") as cursor:
         rows = [dict(row) for row in await cursor.fetchall()]
     return JSONResponse(rows)
 
@@ -214,11 +220,12 @@ async def conversation(request):
             await request.app.state.db.execute("DELETE FROM conversations WHERE id = ?", (row["id"],))
             await request.app.state.db.commit()
         return JSONResponse({"ok": True})
-    snapshot = await request.app.state.graph.aget_state({"configurable": {"thread_id": row["id"]}})
+    graph = request.app.state.graphs[row["mode"]]
+    snapshot = await graph.aget_state({"configurable": {"thread_id": row["id"]}})
     messages = [
         {"role": "user" if message.type == "human" else "assistant", "content": text_content(message.content)}
         for message in snapshot.values.get("messages", [])
-        if message.type in ("human", "ai")
+        if message.type == "human" or (message.type == "ai" and not message.tool_calls)
     ]
     return JSONResponse({**row, "messages": messages})
 
@@ -251,7 +258,7 @@ async def send_message(request):
 
     async def stream():
         try:
-            graph = request.app.state.graph
+            graph = request.app.state.graphs[row["mode"]]
             appearance = await get_preferences(request.app.state.db)
             config = {"configurable": {
                 "thread_id": row["id"],
@@ -266,15 +273,25 @@ async def send_message(request):
             )
             await request.app.state.db.commit()
             yield event("meta", {"id": row["id"], "title": title})
-            async for chunk, metadata in graph.astream(
+            async for stream_mode, payload in graph.astream(
                 {"messages": [{"role": "user", "content": content}]},
                 config=config,
-                stream_mode="messages",
+                stream_mode=["messages", "updates"],
             ):
-                if metadata.get("langgraph_node") == "chatbot":
-                    text = text_content(chunk.content)
-                    if text:
-                        yield event("delta", {"text": text})
+                if stream_mode == "messages":
+                    chunk, metadata = payload
+                    if metadata.get("langgraph_node") == "chatbot":
+                        text = text_content(chunk.content)
+                        if text:
+                            yield event("delta", {"text": text})
+                elif stream_mode == "updates":
+                    for node, update in payload.items():
+                        if not isinstance(update, dict):
+                            continue
+                        if node == "chatbot" and any(getattr(m, "tool_calls", []) for m in update.get("messages", [])):
+                            yield event("status", {"text": "正在使用工具查找资料…"})
+                        elif node == "tools":
+                            yield event("status", {"text": "工具已返回，正在整理回复…"})
             # The authoritative reply comes from the completed checkpoint.
             snapshot = await graph.aget_state(config)
             messages = snapshot.values.get("messages", [])
@@ -329,12 +346,22 @@ def create_app(*, data_dir: Path | None = None, password: str | None = None):
             db.row_factory = aiosqlite.Row
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at REAL NOT NULL)")
+            async with db.execute("PRAGMA table_info(conversations)") as cursor:
+                columns = {row["name"] for row in await cursor.fetchall()}
+            if "mode" not in columns:
+                await db.execute(
+                    "ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'companion' "
+                    "CHECK (mode IN ('companion', 'assistant'))"
+                )
             await initialize_preferences(db)
             await db.commit()
             async with AsyncSqliteSaver.from_conn_string(str(storage / "checkpoints.sqlite")) as saver:
                 app.state.db = db
                 app.state.saver = saver
-                app.state.graph = build_graph(async_model=True).compile(checkpointer=saver)
+                app.state.graphs = {
+                    mode: build(async_model=True).compile(checkpointer=saver, name=mode)
+                    for mode, build in GRAPH_BUILDERS.items()
+                }
                 yield
 
     return Starlette(

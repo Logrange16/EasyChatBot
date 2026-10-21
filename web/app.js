@@ -1,7 +1,21 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { conversations: [], active: null, busy: false, controller: null };
+const state = { conversations: [], active: null, busy: false, controller: null, mode: localStorage.getItem("chatbot-mode") === "assistant" ? "assistant" : "companion", navigation: 0 };
+const modes = {
+  companion: {
+    label: "陪伴模式", description: "日常分享，轻松陪伴", eyebrow: "A LITTLE SPACE, JUST FOR YOU",
+    title: "今天，想聊些什么？", welcome: "生活里的小事，突然冒出的想法，或只是简单地说声「你好」。",
+    placeholder: "慢慢说，我在听…",
+    suggestions: [["☀", "分享今天的小开心", "想和你分享一下今天的小开心。"], ["♡", "陪我聊聊天", "现在有空吗？陪我聊聊天吧。"], ["✧", "一起想个好主意", "我有个想法，想和你一起讨论一下。"]],
+  },
+  assistant: {
+    label: "助手模式", description: "知微 · 检索资料，梳理问题", eyebrow: "EXPLORE WITH EVIDENCE",
+    title: "今天，想了解什么？", welcome: "查找资料、核实信息，或把一个问题慢慢研究清楚。",
+    placeholder: "告诉知微你想研究的问题…",
+    suggestions: [["⌕", "查找最新进展", "请联网检索最近一个月人工智能领域的三项进展，列出日期和来源。"], ["◇", "核实一条信息", "我想核实一条信息，请先问我需要查证的内容。"], ["✧", "梳理研究思路", "我想研究一个问题，请帮助我明确范围并整理检索思路。"]],
+  },
+};
 const mobileLayout = window.matchMedia("(max-width: 680px)");
 const defaultAppearance = { companion_name: "你的聊天伙伴", theme: "lavender", background_opacity: 30, background_url: null };
 let sidebarCollapsed = localStorage.getItem("chatbot-sidebar-collapsed") === "true";
@@ -11,6 +25,48 @@ let settingsBackground;
 let settingsPreviewURL = null;
 let settingsSaving = false;
 let toastTimer;
+
+function agentName(values = appearance) {
+  return state.mode === "assistant" ? "知微" : values.companion_name;
+}
+
+function renderMode() {
+  const mode = modes[state.mode];
+  document.querySelectorAll("[data-mode]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
+    button.disabled = state.busy;
+  });
+  $("mode-description").textContent = mode.description;
+  $("welcome-eyebrow").textContent = mode.eyebrow;
+  $("welcome-title").textContent = mode.title;
+  $("welcome-description").textContent = mode.welcome;
+  $("message-input").placeholder = mode.placeholder;
+  document.querySelectorAll("[data-prompt]").forEach((button, index) => {
+    const [symbol, label, prompt] = mode.suggestions[index];
+    const icon = document.createElement("span");
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = symbol;
+    button.dataset.prompt = prompt;
+    button.replaceChildren(icon, document.createTextNode(` ${label}`));
+  });
+  applyAppearance(appearance);
+}
+
+async function switchMode(mode) {
+  if (state.busy || state.mode === mode) return;
+  state.navigation++;
+  state.mode = mode;
+  state.active = null;
+  localStorage.setItem("chatbot-mode", mode);
+  $("messages").replaceChildren();
+  $("empty-state").hidden = false;
+  renderMode();
+  renderConversations();
+  const previous = localStorage.getItem(`chatbot-last-conversation-${mode}`);
+  if (state.conversations.some(row => row.id === previous && row.mode === mode)) await openConversation(previous);
+  closeSidebar();
+  updateComposer();
+}
 
 function toast(text) {
   $("toast").textContent = text;
@@ -40,6 +96,7 @@ function showLogin() {
   applyAppearance(appearance);
   state.conversations = [];
   state.active = null;
+  state.navigation++;
   $("messages").replaceChildren();
   $("conversation-list").replaceChildren();
   $("chat-screen").hidden = true;
@@ -53,6 +110,8 @@ function setBusy(busy) {
   state.busy = busy;
   $("new-chat").disabled = busy;
   $("logout").disabled = busy;
+  document.querySelectorAll("[data-mode]").forEach(button => { button.disabled = busy; });
+  $("mode-description").textContent = busy ? "正在思考…" : modes[state.mode].description;
   document.querySelectorAll(".conversation-select, .conversation-delete").forEach(button => { button.disabled = busy; });
   $("send-button").classList.toggle("is-stop", busy);
   $("send-button").innerHTML = busy ? '<span aria-hidden="true">■</span>' : '<span aria-hidden="true">↑</span>';
@@ -97,7 +156,7 @@ function addMessage(role, content, pending = false) {
   body.className = "message-body";
   const label = document.createElement("div");
   label.className = "message-label";
-  label.textContent = role === "user" ? "我" : appearance.companion_name;
+  label.textContent = role === "user" ? "我" : agentName();
   const bubble = document.createElement("div");
   bubble.className = "message-content";
   // Model and user messages are always rendered as text, never executable HTML.
@@ -111,14 +170,15 @@ function addMessage(role, content, pending = false) {
 function renderConversations() {
   const list = $("conversation-list");
   list.replaceChildren();
-  $("conversation-count").textContent = String(state.conversations.length);
-  if (!state.conversations.length) {
+  const conversations = state.conversations.filter(row => row.mode === state.mode);
+  $("conversation-count").textContent = String(conversations.length);
+  if (!conversations.length) {
     const empty = document.createElement("p");
     empty.className = "no-conversations";
-    empty.textContent = "还没有对话。\n从一句你好开始吧。";
+    empty.textContent = state.mode === "assistant" ? "还没有助手对话。\n从一个问题开始吧。" : "还没有对话。\n从一句你好开始吧。";
     list.append(empty);
   }
-  for (const conversation of state.conversations) {
+  for (const conversation of conversations) {
     const row = document.createElement("div");
     row.className = `conversation-item${conversation.id === state.active ? " active" : ""}`;
     const button = document.createElement("button");
@@ -157,9 +217,15 @@ async function refreshConversations() {
 
 async function openConversation(id) {
   if (state.busy) return;
+  const navigation = ++state.navigation;
   const data = await (await api(`/api/conversations/${id}`)).json();
+  if (navigation !== state.navigation || state.busy) return;
+  state.mode = data.mode;
   state.active = id;
+  localStorage.setItem("chatbot-mode", state.mode);
   localStorage.setItem("chatbot-last-conversation", id);
+  localStorage.setItem(`chatbot-last-conversation-${state.mode}`, id);
+  renderMode();
   $("messages").replaceChildren();
   $("empty-state").hidden = data.messages.length > 0;
   for (const message of data.messages) addMessage(message.role, message.content);
@@ -170,7 +236,8 @@ async function openConversation(id) {
 
 async function newConversation() {
   if (state.busy) return;
-  const data = await (await api("/api/conversations", { method: "POST" })).json();
+  state.navigation++;
+  const data = await (await api("/api/conversations", { method: "POST", body: JSON.stringify({ mode: state.mode }) })).json();
   await refreshConversations();
   await openConversation(data.id);
   return data.id;
@@ -183,6 +250,7 @@ async function deleteConversation(id) {
     if (state.active === id) {
       state.active = null;
       localStorage.removeItem("chatbot-last-conversation");
+      localStorage.removeItem(`chatbot-last-conversation-${state.mode}`);
       $("messages").replaceChildren();
       $("empty-state").hidden = false;
       updateScrollButton();
@@ -195,12 +263,13 @@ async function deleteConversation(id) {
 async function enterChat() {
   appearance = await (await api("/api/preferences")).json();
   applyAppearance(appearance);
+  renderMode();
   await refreshConversations();
   $("loading-screen").hidden = true;
   $("login-screen").hidden = true;
   $("chat-screen").hidden = false;
-  const previous = localStorage.getItem("chatbot-last-conversation");
-  if (state.conversations.some(row => row.id === previous)) await openConversation(previous);
+  const previous = localStorage.getItem(`chatbot-last-conversation-${state.mode}`) || localStorage.getItem("chatbot-last-conversation");
+  if (state.conversations.some(row => row.id === previous && row.mode === state.mode)) await openConversation(previous);
   else {
     state.active = null;
     $("messages").replaceChildren();
@@ -213,12 +282,14 @@ async function sendMessage() {
   if (state.busy) { state.controller?.abort(); return; }
   const content = $("message-input").value.trim();
   if (!content) return;
+  state.navigation++;
   setBusy(true);
   try {
     if (!state.active) {
-      const data = await (await api("/api/conversations", { method: "POST" })).json();
+      const data = await (await api("/api/conversations", { method: "POST", body: JSON.stringify({ mode: state.mode }) })).json();
       state.active = data.id;
       localStorage.setItem("chatbot-last-conversation", data.id);
+      localStorage.setItem(`chatbot-last-conversation-${state.mode}`, data.id);
       await refreshConversations();
     }
   } catch (error) { setBusy(false); toast(error.message); return; }
@@ -248,6 +319,8 @@ async function sendMessage() {
       } else if (type === "done") {
         reply.bubble.textContent = data.content;
         receivedDone = true;
+      } else if (type === "status") {
+        $("mode-description").textContent = data.text;
       } else if (type === "error") throw new Error(data.detail);
     };
     while (true) {
@@ -308,11 +381,11 @@ function toggleSettingsMenu() {
 function applyAppearance(values) {
   document.documentElement.dataset.theme = values.theme;
   document.documentElement.style.setProperty("--background-opacity", String(values.background_opacity / 100));
-  $("sidebar-companion-name").textContent = values.companion_name;
-  $("sidebar-companion-name").title = values.companion_name;
-  document.title = `${values.companion_name} · 与你聊聊`;
+  $("sidebar-companion-name").textContent = agentName(values);
+  $("sidebar-companion-name").title = agentName(values);
+  document.title = `${agentName(values)} · ${modes[state.mode].label}`;
   $("theme-color").content = { lavender: "#f7f5fc", pink: "#fff5f8", sky: "#f0f8ff" }[values.theme];
-  document.querySelectorAll(".message.assistant .message-label").forEach(label => { label.textContent = values.companion_name; });
+  document.querySelectorAll(".message.assistant .message-label").forEach(label => { label.textContent = agentName(values); });
   $("background-layer").style.backgroundImage = values.background_url ? `url("${values.background_url}")` : "none";
 }
 
@@ -367,6 +440,7 @@ function readImage(file) {
 }
 
 $("open-settings").addEventListener("click", toggleSettingsMenu);
+document.querySelectorAll("[data-mode]").forEach(button => button.addEventListener("click", () => switchMode(button.dataset.mode).catch(error => toast(error.message))));
 $("open-settings").addEventListener("keydown", event => {
   if (event.key === "ArrowDown" && $("settings-menu").hidden) { event.preventDefault(); toggleSettingsMenu(); }
 });

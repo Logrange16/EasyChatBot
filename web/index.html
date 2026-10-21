@@ -59,15 +59,22 @@
     </aside>
 
     <main class="chat-main">
+      <header class="chat-toolbar">
+        <div class="mode-switch" role="group" aria-label="聊天模式">
+          <button type="button" data-mode="companion" aria-pressed="true">陪伴模式</button>
+          <button type="button" data-mode="assistant" aria-pressed="false">助手模式</button>
+        </div>
+        <p id="mode-description" class="mode-description" role="status" aria-live="polite">日常分享，轻松陪伴</p>
+      </header>
       <div class="chat-canvas">
       <button id="open-sidebar" class="icon-button mobile-only sidebar-open" aria-label="打开会话列表" aria-expanded="false">☰</button>
       <div id="background-layer" class="background-layer" aria-hidden="true"></div>
       <div id="scroll-area" class="scroll-area" tabindex="0" role="region" aria-label="对话消息，可上下滚动">
         <section id="empty-state" class="empty-state">
           <div class="welcome-art" aria-hidden="true"><span class="orbit"></span><span class="welcome-star">✦</span><span class="little-star one">✧</span><span class="little-star two">✦</span></div>
-          <p class="eyebrow">A LITTLE SPACE, JUST FOR YOU</p>
-          <h2>今天，想聊些什么？</h2>
-          <p>生活里的小事，突然冒出的想法，<br>或只是简单地说声「你好」。</p>
+          <p id="welcome-eyebrow" class="eyebrow">A LITTLE SPACE, JUST FOR YOU</p>
+          <h2 id="welcome-title">今天，想聊些什么？</h2>
+          <p id="welcome-description">生活里的小事，突然冒出的想法，<br>或只是简单地说声「你好」。</p>
           <div class="suggestions">
             <button data-prompt="想和你分享一下今天的小开心。"><span aria-hidden="true">☀</span> 分享今天的小开心</button>
             <button data-prompt="现在有空吗？陪我聊聊天吧。"><span aria-hidden="true">♡</span> 陪我聊聊天</button>
@@ -95,7 +102,7 @@
       <div id="name-settings" class="settings-fields">
         <label for="companion-name-input">伙伴昵称<input id="companion-name-input" maxlength="24" required autocomplete="off" placeholder="你想怎么称呼她"></label>
       </div>
-      <p class="settings-hint">伙伴昵称会显示在聊天中，也会告知你的聊天伙伴。</p>
+      <p class="settings-hint">伙伴昵称仅用于陪伴模式，也会告知你的聊天伙伴。助手模式使用「知微」。</p>
       <fieldset id="color-settings" class="theme-fieldset"><legend>选择配色</legend><div class="theme-options">
         <button type="button" class="theme-option" data-theme-option="lavender" aria-pressed="true"><span class="theme-swatch swatch-lavender" aria-hidden="true"></span>雨雾紫<span class="theme-check" aria-hidden="true">✓</span></button>
         <button type="button" class="theme-option" data-theme-option="pink" aria-pressed="false"><span class="theme-swatch swatch-pink" aria-hidden="true"></span>樱花粉<span class="theme-check" aria-hidden="true">✓</span></button>

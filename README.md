@@ -1,8 +1,15 @@
 # ChatBot
 
-基于 **LangGraph 和千问模型** 的聊天机器人。提供适配电脑与手机的独立网页界面，支持访问密码、流式回复、多轮聊天和 SQLite 历史记录保存。也可以使用 LangSmith Studio 调试图和会话。
+基于 **LangGraph 和千问模型** 的聊天机器人。提供适配电脑与手机的独立网页界面，支持陪伴与助手两种模式、访问密码、流式回复、多轮聊天和 SQLite 历史记录保存。也可以使用 LangSmith Studio 调试图和会话。
 
 默认使用 `qwen3.7-flash`，模型名称和 API 地址均可通过环境变量调整。默认人设位于 [`prompts.py`](./prompts.py)，可以根据自己的需求修改。
+
+网页顶部可切换两种模式，每种模式使用独立构建、编译的 LangGraph，历史列表分别显示。每段会话创建后固定模式；已有会话升级后自动归入陪伴模式，保留原有记录。
+
+- **陪伴模式**：沿用 `DEFAULT_SYSTEM_PROMPT` 中的元气少女人设和伙伴昵称，保留工具调用接口，不拼接助手的检索提示词。
+- **助手模式**：名为“知微”，使用简短的 `TOOL_SYSTEM_PROMPT`，侧重资料检索、事实核实和简单问题研究，不使用陪伴人设及昵称。
+
+两种模式都获得当前北京时间，并可以自主使用已配置的网页检索工具。设置 `TAVILY_API_KEY` 后启用 Tavily；未配置时仍可聊天，但没有网页检索能力。日期信息由程序提供，专用天气工具尚未接入。网页会根据真实工具调用显示处理状态；搜索结果与最终回答质量仍需核实。
 
 ## 环境要求
 
@@ -64,6 +71,7 @@ CHAT_COOKIE_SECURE=false
 | `QWEN_MODEL` | 模型标识，默认 `qwen3.7-flash`；需要有相应调用权限 |
 | `QWEN_BASE_URL` | OpenAI 兼容接口地址，填写到 `/v1`，不要再追加 `/chat/completions` |
 | `LANGSMITH_API_KEY` | 仅在使用 Studio 或 LangSmith 追踪时配置 |
+| `TAVILY_API_KEY` | 两种模式的网页检索密钥；未配置时仍可聊天，但无法联网搜索 |
 | `CHAT_PASSWORD` | 独立网页的访问密码，至少 8 个字符 |
 | `CHAT_DATA_DIR` | 网页会话和检查点的保存目录，默认 `data/web` |
 | `CHAT_COOKIE_SECURE` | 本地 HTTP 使用 `false`，以后配置 HTTPS 时使用 `true` |
@@ -170,7 +178,7 @@ PYTHONUTF8=1 python -m langgraph_cli dev
 
 ## 在 Studio 中聊天和调试
 
-1. 打开服务输出的 Studio 链接，登录并选择 `chatbot` 图。
+1. 打开服务输出的 Studio 链接，登录并选择 `chatbot`（陪伴模式）或 `assistant`（助手模式）图。两种模式分别创建 Thread。
 2. 在 **Chat 模式**中发送消息，机器人会逐轮回复。
 3. 在同一个 Thread 中继续输入，服务会恢复该会话的消息状态。
 4. 新建 Thread 可以开始独立会话；切回旧 Thread 可以查看并继续原会话。
@@ -182,8 +190,10 @@ PYTHONUTF8=1 python -m langgraph_cli dev
 
 ```text
 ChatBot/
-├── chatbot.py          # 状态、模型、chatbot 节点与导出的 graph
-├── prompts.py          # 默认系统提示词
+├── chatbot.py          # 陪伴模式节点与独立图
+├── assistant.py        # 助手模式节点与独立图
+├── agent_runtime.py    # 共用的模型配置、状态类型和工具创建入口
+├── prompts.py          # 陪伴人设与助手检索提示词
 ├── langgraph.json      # 图入口、项目依赖和环境变量配置
 ├── requirements.txt    # 应用与本地开发服务依赖
 ├── start_web.bat       # 独立网页启动入口
@@ -200,9 +210,9 @@ ChatBot/
 └── README.md
 ```
 
-`chatbot.py` 每次将“系统人设 + 当前会话消息”交给模型，节点只返回新增的助手回复，由 `add_messages` 合并消息。
+`chatbot.py` 与 `assistant.py` 分别构建自己的图、聊天节点和工具节点，使用各自的系统提示词。节点只返回新增消息，由 `add_messages` 合并；工具请求和结果保留在图状态中，网页聊天记录隐藏工具请求与工具原始结果。
 
-Studio 模式通过 `graph_builder.compile()` 导出图；接入 Agent Server 后，检查点和 Thread 由服务管理。独立网页模式则复用同一份模型和人设，使用异步节点与 `AsyncSqliteSaver` 自行持久化会话。Notebook 中手动连接 SQLite 的代码不参与 Studio 应用，已有 Notebook 数据也不会自动迁移到 Studio。
+Studio 模式分别导出两个编译后的图；接入 Agent Server 后，检查点和 Thread 由服务管理。独立网页模式也分别编译两个异步图，根据数据库中的会话模式选图，使用 `AsyncSqliteSaver` 持久化会话。两图共享模型配置和数据库连接，每段会话的消息通过独立的 Thread ID 隔离；不通过同一个图中的模式分支切换提示词。Notebook 中手动连接 SQLite 的代码不参与 Studio 应用，已有 Notebook 数据也不会自动迁移到 Studio。
 
 本地服务产生的 `.langgraph_api/`、Notebook 产生的 `data/` 和数据库文件均属于本机运行数据，已被忽略。`langgraph dev` 是开发测试服务，不应将这些开发数据作为生产环境的数据保障；正式部署应配置相应的持久化基础设施。
 
