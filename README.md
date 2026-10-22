@@ -1,4 +1,6 @@
-# ChatBot
+# QuestMate
+
+| **QuestMate — A dual-mode agent for autonomous research and personalized companionship.**
 
 基于 LangGraph 和千问模型的聊天网站，提供陪伴模式和助手模式，支持电脑与手机浏览器、访问密码、流式回复和 SQLite 历史记录。
 
