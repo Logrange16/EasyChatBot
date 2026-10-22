@@ -1,8 +1,8 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "chatbot": "./chatbot.py:graph",
-    "assistant": "./assistant.py:graph"
+    "chatbot": "./chatbot_app/companion/graph.py:graph",
+    "assistant": "./chatbot_app/assistant/graph.py:graph"
   },
   "env": ".env"
 }

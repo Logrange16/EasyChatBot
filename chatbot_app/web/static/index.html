@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta id="theme-color" name="theme-color" content="#f7f5fc">
+  <meta name="description" content="一个可以慢慢说话的地方。你的私人聊天伙伴。">
+  <title>与你聊聊</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/vendor/katex-0.19.0/katex.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/markdown-it-15.0.3/markdown-it.min.js" defer></script>
+  <script src="/static/vendor/katex-0.19.0/katex.min.js" defer></script>
+  <script src="/static/rendering.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login-screen" class="login-screen" hidden>
+    <div class="login-decoration" aria-hidden="true"><span></span><span></span><span></span></div>
+    <main class="login-card">
+      <div class="brand-symbol large" aria-hidden="true">✦</div>
+      <p class="eyebrow">PRIVATE SPACE</p>
+      <h1>留一点时间，<br>和自己喜欢的人聊聊。</h1>
+      <p class="login-description">生活的小事、突然的灵感，<br>还有那些想被认真听见的话。</p>
+      <form id="login-form">
+        <label for="password">访问密码</label>
+        <div class="password-field">
+          <input id="password" name="password" type="password" autocomplete="current-password" placeholder="输入你的访问密码" required maxlength="256">
+          <button id="show-password" type="button" class="text-button" aria-label="显示密码">显示</button>
+        </div>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button id="login-button" class="primary-button" type="submit">进入聊天 <span aria-hidden="true">↗</span></button>
+      </form>
+      <p class="login-note"><span class="tiny-dot"></span> 这里，只有你的对话</p>
+    </main>
+    <footer class="login-footer">SOMEWHERE TO SHARE YOUR EVERYDAY.</footer>
+  </section>
+
+  <div id="chat-screen" class="app-shell" hidden>
+    <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="关闭会话列表" tabindex="-1" hidden></button>
+    <aside id="sidebar" class="sidebar" aria-label="会话列表">
+      <div class="sidebar-brand">
+        <span class="brand-symbol" aria-hidden="true">✦</span>
+        <span id="sidebar-companion-name" class="brand-copy">你的聊天伙伴</span>
+        <button id="toggle-sidebar" class="icon-button desktop-only" type="button" aria-label="收起侧边栏" title="收起侧边栏" aria-expanded="true" aria-controls="conversation-list"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
+        <button id="close-sidebar" class="icon-button mobile-only" type="button" aria-label="关闭会话列表">×</button>
+      </div>
+      <button id="new-chat" class="new-chat" aria-label="开启一段新对话" title="开启一段新对话"><span aria-hidden="true">＋</span><span class="new-chat-label">开启一段新对话</span></button>
+      <div class="list-heading"><span>最近的对话</span><span id="conversation-count">0</span></div>
+      <nav id="conversation-list" class="conversation-list" aria-label="历史对话"></nav>
+      <div id="settings-area" class="sidebar-bottom">
+        <div class="settings-controls">
+        <div id="settings-menu" class="settings-menu" role="menu" aria-label="设置" hidden>
+          <button type="button" role="menuitem" data-settings-section="names"><span aria-hidden="true">Aa</span>伙伴与人设</button>
+          <button type="button" role="menuitem" data-settings-section="colors"><span aria-hidden="true">◐</span>界面配色</button>
+          <button type="button" role="menuitem" data-settings-section="background"><span aria-hidden="true">▧</span>聊天背景</button>
+          <div class="menu-divider" role="separator"></div>
+          <button id="logout" type="button" role="menuitem"><span aria-hidden="true">↗</span>退出登录</button>
+        </div>
+        <button id="open-settings" class="settings-trigger" type="button" aria-label="设置" title="设置" aria-haspopup="menu" aria-controls="settings-menu" aria-expanded="false"><span class="settings-gear" aria-hidden="true">⚙</span></button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="chat-main">
+      <header class="chat-toolbar">
+        <div class="mode-switch" role="group" aria-label="聊天模式">
+          <button type="button" data-mode="companion" aria-pressed="true">陪伴模式</button>
+          <button type="button" data-mode="assistant" aria-pressed="false">助手模式</button>
+        </div>
+        <p id="mode-description" class="mode-description" role="status" aria-live="polite">日常分享，轻松陪伴</p>
+      </header>
+      <div class="chat-canvas">
+      <button id="open-sidebar" class="icon-button mobile-only sidebar-open" aria-label="打开会话列表" aria-expanded="false">☰</button>
+      <div id="background-layer" class="background-layer" aria-hidden="true"></div>
+      <div id="scroll-area" class="scroll-area" tabindex="0" role="region" aria-label="对话消息，可上下滚动">
+        <section id="empty-state" class="empty-state">
+          <div class="welcome-art" aria-hidden="true"><span class="orbit"></span><span class="welcome-star">✦</span><span class="little-star one">✧</span><span class="little-star two">✦</span></div>
+          <p id="welcome-eyebrow" class="eyebrow">A LITTLE SPACE, JUST FOR YOU</p>
+          <h2 id="welcome-title">今天，想聊些什么？</h2>
+          <p id="welcome-description">生活里的小事，突然冒出的想法，<br>或只是简单地说声「你好」。</p>
+          <div class="suggestions">
+            <button data-prompt="想和你分享一下今天的小开心。"><span aria-hidden="true">☀</span> 分享今天的小开心</button>
+            <button data-prompt="现在有空吗？陪我聊聊天吧。"><span aria-hidden="true">♡</span> 陪我聊聊天</button>
+            <button data-prompt="我有个想法，想和你一起讨论一下。"><span aria-hidden="true">✧</span> 一起想个好主意</button>
+          </div>
+        </section>
+        <section id="messages" class="messages" role="log" aria-label="聊天记录" aria-live="polite"></section>
+      </div>
+      <button id="scroll-latest" class="scroll-latest" type="button" aria-label="回到最新消息" hidden><span aria-hidden="true">↓</span> 回到最新</button>
+      </div>
+
+      <div class="composer-area">
+        <form id="message-form" class="composer">
+          <label for="message-input" class="sr-only">发送消息</label>
+          <textarea id="message-input" rows="1" placeholder="慢慢说，我在听…" maxlength="12000"></textarea>
+          <button id="send-button" class="send-button" type="submit" aria-label="发送消息" disabled><span aria-hidden="true">↑</span></button>
+        </form>
+        <div class="composer-note"><span>对话会自动保存</span><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div>
+      </div>
+    </main>
+  </div>
+  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+    <div class="settings-heading"><div><p class="eyebrow">MAKE IT YOURS</p><h2 id="settings-title">你的空间，你来定义</h2></div><button id="close-settings" class="icon-button" aria-label="关闭个性化设置" type="button">×</button></div>
+    <form id="settings-form">
+      <div id="name-settings" class="settings-fields">
+        <label for="companion-name-input">伙伴昵称<input id="companion-name-input" maxlength="24" required autocomplete="off" placeholder="你想怎么称呼伙伴"></label>
+        <label for="companion-prompt-input">陪伴人设<textarea id="companion-prompt-input" maxlength="20000" rows="6" autocomplete="off" placeholder="描述伙伴的性格、交流方式和互动边界；留空使用服务器默认人设。"></textarea></label>
+      </div>
+      <p class="settings-hint">昵称和人设仅用于陪伴模式，保存后从下一条回复生效。助手模式使用「知微」。所有登录此网站的设备共享这些设置。</p>
+      <fieldset id="color-settings" class="theme-fieldset"><legend>选择配色</legend><div class="theme-options">
+        <button type="button" class="theme-option" data-theme-option="lavender" aria-pressed="true"><span class="theme-swatch swatch-lavender" aria-hidden="true"></span>雨雾紫<span class="theme-check" aria-hidden="true">✓</span></button>
+        <button type="button" class="theme-option" data-theme-option="pink" aria-pressed="false"><span class="theme-swatch swatch-pink" aria-hidden="true"></span>樱花粉<span class="theme-check" aria-hidden="true">✓</span></button>
+        <button type="button" class="theme-option" data-theme-option="sky" aria-pressed="false"><span class="theme-swatch swatch-sky" aria-hidden="true"></span>晴空蓝<span class="theme-check" aria-hidden="true">✓</span></button>
+      </div></fieldset>
+      <div id="background-settings" class="background-setting">
+        <div class="setting-section-heading"><h3>聊天背景</h3><button id="remove-background" class="text-button" type="button">移除背景</button></div>
+        <div id="background-preview" class="background-preview"><span id="background-placeholder" aria-hidden="true">✧</span></div>
+        <div class="background-upload-row"><label for="background-file" class="upload-button">选择背景图</label><input id="background-file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" class="sr-only"><span id="background-file-label" class="settings-hint">PNG / JPG，最大 8 MB</span></div>
+        <p class="settings-hint">背景会保持比例、居中铺满，随电脑和手机屏幕自动适配。</p>
+        <label for="background-opacity" class="opacity-label">背景显示强度<output id="background-opacity-value" for="background-opacity">30%</output></label>
+        <input id="background-opacity" class="opacity-slider" type="range" min="0" max="100" value="30">
+      </div>
+      <p id="settings-error" class="form-error" role="alert"></p>
+      <div class="settings-actions"><button id="cancel-settings" class="secondary-button" type="button">取消</button><button id="save-settings" class="primary-button" type="submit">保存设置</button></div>
+    </form>
+  </dialog>
+  <div id="loading-screen" class="loading-screen"><span class="brand-symbol large">✦</span><p>正在打开你的聊天空间…</p></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

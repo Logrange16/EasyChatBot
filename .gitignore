@@ -18,6 +18,19 @@ init.ipynb
 init_ipynb
 init_ipynb.*
 .ipynb_checkpoints/
+tool.ipynb
+*.ipynb
+/docs/
+/tests/
+
+# Private persona overrides and credential files.
+/companion_prompt.local.md
+*.pem
+*.key
+*.p12
+*.pfx
+*.backup
+*.bak
 
 # Generated files, editor settings and machine-specific Windows shortcuts.
 __pycache__/
